@@ -1,0 +1,117 @@
+// @ts-check
+
+/**
+ * @typedef {import("../views/chatBotView.js").ChatbotView} ChatBotView
+ * @typedef {import("../services/promptService.js").PromptService} PromptService
+ */
+
+export class ChatbotController {
+    #abortController;
+    #chatbotView;
+    #promptService;
+
+    /**
+    * @param {Object} deps - Dependencies for the class.
+    * @param {ChatBotView} deps.chatbotView - The chatbot view instance.
+    * @param {PromptService} deps.promptService - The prompt service instance.
+    */
+    constructor({ chatbotView, promptService }) {
+        this.#chatbotView = chatbotView;
+        this.#promptService = promptService;
+    }
+
+    async init({ firstBotMessage, text }) {
+        this.#setupEvents();
+        this.#chatbotView.renderWelcomeBubble();
+        this.#chatbotView.setInputEnabled(true);
+        this.#chatbotView.appendBotMessage(firstBotMessage, null, false);
+        return this.#promptService.init(text);    
+    }
+
+    #setupEvents() {
+        this.#chatbotView.setupEventHandlers({
+            onOpen: this.#onOpen.bind(this),
+            onSend: this.#chatBotReply.bind(this),
+            onStop: this.#handleStop.bind(this),
+        });
+    }
+
+    #handleStop() {
+        this.#abortController.abort();
+    }
+
+    async #chatBotReply(userMsg) {
+        this.#chatbotView.showTypingIndicator();
+        this.#chatbotView.setInputEnabled(false);
+
+        try {
+            this.#abortController = new AbortController();
+
+            const contentNode = this.#chatbotView.createStreamingBotMessage()
+            const response = await this.#promptService.prompt(userMsg, this.#abortController.signal);
+        
+            let fullResponse = ''
+            let lastMessage = 'noop'
+            
+            const updateText = () => {
+                if(!fullResponse) return
+                if(fullResponse === lastMessage) return
+                lastMessage = fullResponse
+                this.#chatbotView.hideTypingIndicator();
+                this.#chatbotView.updateStreamingBotMessage(contentNode, fullResponse)
+            }
+
+            const intervalId = setInterval(updateText, 200);
+            const stopGenerate = () => {
+                clearInterval(intervalId);
+                updateText();
+                this.#chatbotView.setInputEnabled(true);
+            }
+
+            this.#abortController.signal.addEventListener('abort', stopGenerate)
+
+            for await (const chunk of response) {
+                if(!chunk) continue;
+                fullResponse += chunk;
+            }
+            stopGenerate();
+        } catch (error) {
+            this.#chatbotView.hideTypingIndicator();
+            if(error.name === 'AbortError') {
+                return console.log('Request aborted by the user');
+            }
+
+            this.#chatbotView.appendBotMessage('Desculpe, algo deu errado. Por favor, tente novamente mais tarde.');
+        }
+    }
+
+    async #onOpen() {
+        const errors = this.#checkRequirements();
+        if(errors.length) {
+            errors.forEach(err => this.#chatbotView.appendBotMessage(err));
+            this.#chatbotView.setInputEnabled(false);
+
+            return;
+        }
+        this.#chatbotView.setInputEnabled(true);
+       
+    }
+
+    #checkRequirements(){
+        const errors = [];
+        //@ts-ignore
+        const isChrome = window.chrome
+
+        if(!isChrome) {
+            errors.push("Oops! É necessário usar o Google Chrome para este chatbot funcionar corretamente.");
+        }
+
+        if(!('LanguageModel' in window)) {
+            errors.push('As apis de IA nativas não estão ativas')
+            errors.push("Oops! É necessário usar um modelo de linguagem compatível.");
+        }
+
+        return errors;
+    }
+
+}
